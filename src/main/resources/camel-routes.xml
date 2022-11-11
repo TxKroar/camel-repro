@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:camel="http://camel.apache.org/schema/spring"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
+                           http://camel.apache.org/schema/spring https://camel.apache.org/schema/spring/camel-spring.xsd">
+
+    <bean id="input.activemq" class="org.apache.camel.component.activemq.ActiveMQComponent">
+        <property name="connectionFactory" ref="input.connectionFactory" />
+        <property name="deliveryMode" value="#{T(javax.jms.DeliveryMode).NON_PERSISTENT}" />
+        <property name="timeToLive" value="5000" />
+    </bean>
+
+    <bean id="input.connectionFactory" class="org.apache.activemq.ActiveMQConnectionFactory">
+        <property name="brokerURL" value="vm://localhost?broker.persistent=false" />
+        <property name="trustedPackages">
+            <list>
+                <value>camel.repro.camelrepro.camel.data</value>
+                <value>java.util</value>
+            </list>
+        </property>
+    </bean>
+
+    <camelContext id="camel-distribution" autoStartup="true" xmlns="http://camel.apache.org/schema/spring">
+        <camel:template id="server.camelTemplate" />
+        <routeContextRef ref="data-distribution-routes"/>
+        <threadPoolProfile id="camel-distribution" defaultProfile="true" poolSize="1" maxPoolSize="10"/>
+        <endpoint id="dataPacketInput" uri="input.activemq:topic:dataPackets"/>
+    </camelContext>
+
+    <routeContext id="data-distribution-routes" xmlns="http://camel.apache.org/schema/spring">
+        <route id="data-input" startupOrder="40">
+            <from uri="ref:dataPacketInput" />
+            <to uri="bean:dataFilter?method=filterData" />
+        </route>
+
+        <route id="data-aggregation" startupOrder="10">
+            <from uri="direct:data-aggregation"/>
+            <aggregate id="data-aggregate" aggregationStrategy="aggregationStrategy" completionInterval="500"
+                       completionSize="100" parallelProcessing="true">
+                <correlationExpression>
+                    <method ref="aggregationStrategy" method="correlate"/>
+                </correlationExpression>
+                <to uri="bean:dataConsumer"/>
+            </aggregate>
+        </route>
+    </routeContext>
+
+    <bean id="dataFilter" class="camel.repro.camelrepro.camel.pipeline.Filter">
+        <constructor-arg name="producerTemplate" ref="server.camelTemplate"/>
+        <constructor-arg name="endpointUri" value="direct:data-aggregation"/>
+    </bean>
+
+    <bean id="aggregationStrategy" class="camel.repro.camelrepro.camel.pipeline.AggregationStrategy"/>
+
+    <!-- Our Consumer at the end of the camel pipeline: we deliberately made it very slow to reliably reproduce the issue -->
+    <bean id="dataConsumer" class="camel.repro.camelrepro.camel.pipeline.Consumer"/>
+
+    <!-- the dataProducer simulates another system sending data via an AMQ Broker to the camel pipeline defined above -->
+    <bean id="dataProducer" class="camel.repro.camelrepro.camel.pipeline.Producer" init-method="start" destroy-method="stopProducing">
+        <constructor-arg name="producerTemplate" ref="server.camelTemplate"/>
+        <constructor-arg name="endpointUri" value="input.activemq:topic:dataPackets"/>
+    </bean>
+</beans>
